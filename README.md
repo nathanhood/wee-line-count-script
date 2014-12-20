@@ -2,7 +2,8 @@
 
 This is a Node.js script that retrieves select files from
 Wee Framework's github repository, parses the raw text
-response, and generates a JSON file of all methods/mixins/variables with line numbers.
+response, and generates a JSON file of all methods/mixins/variables with
+their respective line numbers.
 
 ## [Wee Framework](https://github.com/weepower/wee)
 
