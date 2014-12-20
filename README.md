@@ -1,4 +1,4 @@
-# Wee Framework File Line Count Script
+# Wee Framework Line Count Script
 
 This is a Node.js script that retrieves select files from
 Wee Framework's github repository, parses the raw text
