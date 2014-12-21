@@ -17,12 +17,6 @@ var apiResponses = {},
 	contentPath = '/repos/weepower/wee/contents/',
 	branch = '?ref=2.1.0',
 	fileCount = 0;
-	// scriptPath = rootPath + '/assets/wee/script',
-	// stylePath = rootPath + '/assets/wee/style';
-
-
-// retrieveMixinFile();
-// retrieveVariablesFile();
 
 // Retrieve entire tree path (based on SHA number)
 server.get({
