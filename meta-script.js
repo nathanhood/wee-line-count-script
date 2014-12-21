@@ -6,23 +6,30 @@ var options = {
 	cert: fs.readFileSync('./ssl/cert.pem')
 };
 
-server.createServer(options, function (req, res) {
+server.createServer(options, function () {
 }).listen(3000);
 
 console.log('Node server listening. Port: ' + 3000);
 
-var apiResponses = {};
+var apiResponses = {},
+	hostname = 'api.github.com',
+	treePath = '/repos/weepower/wee/git/trees/7b1207b95e345651eb25d17eee13fff42bd7bc72?recursive=1',
+	contentPath = '/repos/weepower/wee/contents/',
+	branch = '?ref=2.1.0',
+	fileCount = 0;
+	// scriptPath = rootPath + '/assets/wee/script',
+	// stylePath = rootPath + '/assets/wee/style';
 
-retrieveMixinFile();
-retrieveVariablesFile();
 
-// Retrieve all JS file names from wee/script directory
+// retrieveMixinFile();
+// retrieveVariablesFile();
+
+// Retrieve entire tree path (based on SHA number)
 server.get({
-	hostname: 'api.github.com',
-	path: '/repos/weepower/wee/contents/public/assets/wee/script',
+	hostname: hostname,
+	path: treePath,
 	headers: {
-		'user-agent': 'weepower',
-		'Accept': 'application/vnd.github.v3.raw+json'
+		'user-agent': 'weepower'
 	}
 }, function(res) {
 	var data = "";
@@ -32,7 +39,10 @@ server.get({
 	});
 
 	res.on('end', function(){
-		var jsFileNames = [],
+		var filePaths = {
+				script: [],
+				style: []
+			},
 			parsed = data.replace(/['"{}[\]]/g, '').split(',');
 
 		parsed.forEach(function(line) {
@@ -40,109 +50,105 @@ server.get({
 				return val.trim();
 			});
 
-			if (keyValues[0] === 'name') {
-				jsFileNames.push(keyValues[1]);
+			if (keyValues[0] === 'path' && /^public\/assets\/wee/.test(keyValues[1])) {
+				var segments = keyValues[1].split('/'),
+					path = keyValues[1];
+
+				if (segments[3] === 'script') {
+					filePaths.script.push(path);
+				} else if (segments[3] === 'style') {
+					filePaths.style.push(path);
+				}
 			}
 		});
 
-		retrieveJsFiles(jsFileNames);
+		var filtered = filterFilePaths(filePaths);
+		countPaths(filtered);
+		getFiles(filtered);
 	});
 }).on('error', function(e) {
 	console.log("Got error: " + e.message);
 });
 
+function countPaths(filePaths) {
+	var keys = Object.keys(filePaths);
 
-// Retrieve and format JS file contents
-function retrieveJsFiles(fileNames) {
+	keys.forEach(function(type) {
+		fileCount += filePaths[type].length;
+	});
+}
+
+// filter out directories, JSCS, JSHint and other unwanted Files
+function filterFilePaths(filePaths) {
+	filePaths.script = filePaths.script.filter(function(path) {
+		var segments = path.split('/');
+		if (segments[4] && /.js$/.test(segments[4])) {
+			return true;
+		} else if (segments[5]) {
+			return true;
+		} else {
+			return false;
+		}
+	});
+
+	filePaths.style = filePaths.style.filter(function(path) {
+		var segments = path.split('/');
+
+		if (segments[4] === 'wee.mixins.less') {
+			return true;
+		} else if (segments[4] === 'wee.variables.less') {
+			return true;
+		} else {
+			return false;
+		}
+	});
+
+	return filePaths;
+}
+
+// retrieve all files from github -- individual request per file needed
+function getFiles(filePaths) {
 	var counter = 1,
-		jsFiles = {};
+		jsFiles = {},
+		keys = Object.keys(filePaths);
 
-	fileNames.forEach(function(file) {
-		server.get({
-			hostname: 'api.github.com',
-			path: '/repos/weepower/wee/contents/public/assets/wee/script/' + file,
-			headers: {
-				'user-agent': 'weepower',
-				'Accept': 'application/vnd.github.v3.raw+json'
-			}
-		}, function(res) {
-			var data = "";
-
-			res.on('data', function (chunk) {
-				data += chunk;
-			});
-
-			res.on('end', function(){
-				jsFiles[file] = data;
-
-				if (counter === fileNames.length) {
-					apiResponses.scripts = jsFiles;
-					if (requestsComplete(apiResponses)) {
-						createFile(apiResponses);
-					} else {
-						return;
-					}
+	keys.forEach(function(fileType) {
+		filePaths[fileType].forEach(function(path) {
+			server.get({
+				hostname: 'api.github.com',
+				path: contentPath + path + branch,
+				headers: {
+					'user-agent': 'weepower',
+					'Accept': 'application/vnd.github.v3.raw+json'
 				}
-				counter++;
+			}, function(res) {
+				var data = "";
+
+				res.on('data', function (chunk) {
+					data += chunk;
+				});
+
+				res.on('end', function(){
+					var segments = path.split('/'),
+						file = segments[(segments.length - 1)];
+
+					if (/.js$/.test(file)) {
+						jsFiles[file] = data;
+					} else if (file === 'wee.mixins.less') {
+						apiResponses.mixins = data;
+					} else if (file === 'wee.variables.less') {
+						apiResponses.variables = data;
+					}
+
+					if (counter === fileCount) {
+						apiResponses.scripts = jsFiles;
+						createFile(apiResponses);
+					}
+					counter++;
+				});
+			}).on('error', function(e) {
+				console.log("Got error: " + e.message);
 			});
-		}).on('error', function(e) {
-			console.log("Got error: " + e.message);
-		});
-	});
-}
-
-// retrieve mixin file from github
-function retrieveMixinFile() {
-	server.get({
-		hostname: 'api.github.com',
-		path: '/repos/weepower/wee/contents/public/assets/wee/style/wee.mixins.less',
-		headers: {
-			'user-agent': 'weepower',
-			'Accept': 'application/vnd.github.v3.raw+json'
-		}
-	}, function(res) {
-		var data = "";
-
-		res.on('data', function (chunk) {
-			data += chunk;
-		});
-
-		res.on('end', function(){
-			apiResponses.mixins = data;
-
-			if (requestsComplete(apiResponses)) {
-				createFile(apiResponses);
-			} else {
-				return;
-			}
-		});
-	});
-}
-
-// retrieve variables file from github
-function retrieveVariablesFile() {
-	server.get({
-		hostname: 'api.github.com',
-		path: '/repos/weepower/wee/contents/public/assets/wee/style/wee.variables.less',
-		headers: {
-			'user-agent': 'weepower',
-			'Accept': 'application/vnd.github.v3.raw+json'
-		}
-	}, function(res) {
-		var data = "";
-
-		res.on('data', function (chunk) {
-			data += chunk;
-		});
-
-		res.on('end', function(){
-			apiResponses.variables = data;
-
-			if (requestsComplete(apiResponses)) {
-				createFile(apiResponses);
-			} else {
-				return;
-			}
 		});
 	});
 }
@@ -179,39 +185,17 @@ function parseJSFiles(files) {
 	return script;
 }
 
-// find variable names and line numbers in Mixin file
-function parseMixins(file) {
-	// var data = fs.readFileSync('assets/wee/style/wee.mixins.less', 'utf8').split('\n');
-	var data = file.split('\n'),
-		mixins = {};
-
-	data.forEach(function(line, index) {
-		if (index > 2) {
-			if (/^\/\/ /.test(line)) {
-				var mixinCat = line.replace('\/\/ ', '').replace(' \/\/', '');
-
-				mixins[mixinCat] = index + 1;
-			}
-		}
-	});
-
-	return mixins;
-}
-
-// find variable names and line numbers in variable files
-function parseVariables(file) {
-	// var data = fs.readFileSync('assets/wee/style/wee.variables.less', 'utf8').split('\n');
+// find category titles and line numbers in style files
+function parseStyleFiles(file) {
 	var data = file.split('\n'),
 		variables = {};
 
 	data.forEach(function(line, index) {
-		var parsed = line.split(':');
+		line = line.trim();
 
-		if (index > 2) {
-			if (/\/\/ /.test(parsed[0]) && / \/\//.test(parsed[0])) {
-				var varSubject = parsed[0].replace('// ', '').replace(' //', '');
-				variables[varSubject] = index + 1;
-			}
+		if (/# /.test(line)) {
+			var category = line.replace('# ', '');
+			variables[category] = index + 1;
 		}
 	});
 
@@ -223,8 +207,8 @@ function createFile(responses) {
 	var finalJSON = {};
 
 	finalJSON.scripts = parseJSFiles(responses.scripts);
-	finalJSON.mixins = parseMixins(responses.mixins);
-	finalJSON.variables = parseVariables(responses.variables);
+	finalJSON.mixins = parseStyleFiles(responses.mixins);
+	finalJSON.variables = parseStyleFiles(responses.variables);
 
 	fs.writeFile('line-counts.json', JSON.stringify(finalJSON, null, 4), function (err) {
 		if (err) {
