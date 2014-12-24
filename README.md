@@ -1,11 +1,21 @@
 # Wee Framework Line Count Script
 
 This is a Node.js script that retrieves select files from
-Wee Framework's github repository, parses the raw text
+Wee Framework's latest github repository, parses the raw text
 response, and generates a JSON file of all methods/mixins/variables with
 their respective line numbers.
 
-## [Wee Framework](https://github.com/weepower/wee)
+In order to run script, there are three variables that need to be set:
+
+1. Github username
+2. Github password
+3. Branch name that is being targeted
+
+Example:
+
+		USER=githubusername PASS=githubpassword BRANCH=branchname node meta-script.js
+
+## Wee Framework
 
 Your blueprint for modern web development. To read more, visit [weepower.com](http://www.weepower.com).
 

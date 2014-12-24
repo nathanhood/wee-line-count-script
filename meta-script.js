@@ -1,38 +1,118 @@
-var server = require('https');
-var fs = require('fs');
-
-var options = {
-	key: fs.readFileSync('./ssl/key.pem'),
-	cert: fs.readFileSync('./ssl/cert.pem')
-};
-
-server.createServer(options, function () {
-}).listen(3000);
-
-console.log('Node server listening. Port: ' + 3000);
-
-var apiResponses = {},
+var server = require('https'),
+	fs = require('fs'),
+	auth = 'Basic ' + new Buffer(process.env.USER + ':' + process.env.PASS).toString('base64'),
+	apiResponses = {},
 	hostname = 'api.github.com',
-	treePath = '/repos/weepower/wee/git/trees/7b1207b95e345651eb25d17eee13fff42bd7bc72?recursive=1',
 	contentPath = '/repos/weepower/wee/contents/',
-	branch = '?ref=2.1.0',
-	fileCount = 0;
+	branch = '?ref=2.1.0';
 
-// Retrieve entire tree path (based on SHA number)
-server.get({
-	hostname: hostname,
-	path: treePath,
-	headers: {
-		'user-agent': 'weepower'
-	}
-}, function(res) {
-	var data = "";
+function getData(options, callback) {
+	server.get(options, function(res) {
+		var data = '';
 
-	res.on('data', function (chunk) {
-		data += chunk;
+		res.on('data', function(chunk) {
+			data += chunk;
+		});
+
+		res.on('end', function() {
+			callback(data);
+		});
+	}).on('error', function(e) {
+		console.log('Got error: ' + e.message);
+	});
+}
+
+function countPaths(filePaths) {
+	var fileCount = 0;
+
+	Object.keys(filePaths).forEach(function(type) {
+		fileCount += filePaths[type].length;
 	});
 
-	res.on('end', function(){
+	return fileCount;
+}
+
+// Filter out directories, JSCS, JSHint and other unwanted Files
+function filterFilePaths(filePaths) {
+	return {
+		script: filePaths.script.filter(function(path) {
+			var segments = path.split('/');
+
+			return (segments[4] && /.js$/.test(segments[4])) || segments[5];
+		}),
+		style: filePaths.style.filter(function(path) {
+			var segments = path.split('/');
+
+			return segments[4] === 'wee.mixins.less' || segments[4] === 'wee.variables.less';
+		})
+	};
+}
+
+// Find variable names and line numbers in JS files
+function parseJSFiles(files) {
+	var script = {};
+
+	Object.keys(files).forEach(function(file) {
+		script[file] = {};
+
+		var data = files[file].replace(/\t+/g, '').split('\n');
+
+		data.forEach(function(line, i) {
+			var parsed = line.split(':');
+
+			if (/^[$a-zA-Z]+$/.test(parsed[0]) && /^ function/.test(parsed[1])) {
+				script[file][parsed[0]] = i + 1;
+			}
+		});
+	});
+
+	return script;
+}
+
+// Find category titles and line numbers in style files
+function parseStyleFiles(file) {
+	var data = file.split('\n'),
+	variables = {};
+
+	data.forEach(function(line, i) {
+		line = line.trim();
+
+		if (/# /.test(line)) {
+			var category = line.replace('# ', '');
+
+			variables[category] = i + 1;
+		}
+	});
+
+	return variables;
+}
+
+
+// Start of script
+// Determine SHA number of last commit for desired branch
+getData({
+	hostname: hostname,
+	path: '/repos/weepower/wee/git/refs/heads/' + process.env.BRANCH,
+	headers: {
+		'user-agent': 'weepower',
+		'authorization': auth
+	}
+}, function(data) {
+	var treePath = '/repos/weepower/wee/git/trees/' + JSON.parse(data).object.sha + '?recursive=1';
+
+	getTree(treePath);
+});
+
+// Retrieve entire tree path (based on SHA number)
+function getTree(treePath) {
+	getData({
+		hostname: hostname,
+		path: treePath,
+		headers: {
+			'user-agent': 'weepower',
+			'authorization': auth
+		}
+	}, function(data) {
 		var filePaths = {
 				script: [],
 				style: []
@@ -46,171 +126,75 @@ server.get({
 
 			if (keyValues[0] === 'path' && /^public\/assets\/wee/.test(keyValues[1])) {
 				var segments = keyValues[1].split('/'),
-					path = keyValues[1];
+					path = keyValues[1],
+					type = segments[3];
 
-				if (segments[3] === 'script') {
+				if (type === 'script') {
 					filePaths.script.push(path);
-				} else if (segments[3] === 'style') {
+				} else if (type === 'style') {
 					filePaths.style.push(path);
 				}
 			}
 		});
 
 		var filtered = filterFilePaths(filePaths);
-		countPaths(filtered);
+
 		getFiles(filtered);
 	});
-}).on('error', function(e) {
-	console.log("Got error: " + e.message);
-});
-
-function countPaths(filePaths) {
-	var keys = Object.keys(filePaths);
-
-	keys.forEach(function(type) {
-		fileCount += filePaths[type].length;
-	});
 }
 
-// filter out directories, JSCS, JSHint and other unwanted Files
-function filterFilePaths(filePaths) {
-	filePaths.script = filePaths.script.filter(function(path) {
-		var segments = path.split('/');
-		if (segments[4] && /.js$/.test(segments[4])) {
-			return true;
-		} else if (segments[5]) {
-			return true;
-		} else {
-			return false;
-		}
-	});
-
-	filePaths.style = filePaths.style.filter(function(path) {
-		var segments = path.split('/');
-
-		if (segments[4] === 'wee.mixins.less') {
-			return true;
-		} else if (segments[4] === 'wee.variables.less') {
-			return true;
-		} else {
-			return false;
-		}
-	});
-
-	return filePaths;
-}
-
-// retrieve all files from github -- individual request per file needed
+// Retrieve all files from GitHub -- individual request per file needed
 function getFiles(filePaths) {
-	var counter = 1,
-		jsFiles = {},
+	var jsFiles = {},
+		fileCount = countPaths(filePaths),
+		counter = 1,
 		keys = Object.keys(filePaths);
 
 	keys.forEach(function(fileType) {
 		filePaths[fileType].forEach(function(path) {
-			server.get({
+			getData({
 				hostname: 'api.github.com',
 				path: contentPath + path + branch,
 				headers: {
 					'user-agent': 'weepower',
+					'authorization': auth,
 					'Accept': 'application/vnd.github.v3.raw+json'
 				}
-			}, function(res) {
-				var data = "";
+			}, function(data) {
+				var segments = path.split('/'),
+					file = segments[(segments.length - 1)];
 
-				res.on('data', function (chunk) {
-					data += chunk;
-				});
+				if (/.js$/.test(file)) {
+					jsFiles[file] = data;
+				} else if (file === 'wee.mixins.less') {
+					apiResponses.mixins = data;
+				} else if (file === 'wee.variables.less') {
+					apiResponses.variables = data;
+				}
 
-				res.on('end', function(){
-					var segments = path.split('/'),
-						file = segments[(segments.length - 1)];
-
-					if (/.js$/.test(file)) {
-						jsFiles[file] = data;
-					} else if (file === 'wee.mixins.less') {
-						apiResponses.mixins = data;
-					} else if (file === 'wee.variables.less') {
-						apiResponses.variables = data;
-					}
-
-					if (counter === fileCount) {
-						apiResponses.scripts = jsFiles;
-						createFile(apiResponses);
-					}
-					counter++;
-				});
-			}).on('error', function(e) {
-				console.log("Got error: " + e.message);
+				if (counter === fileCount) {
+					apiResponses.scripts = jsFiles;
+					createFile(apiResponses);
+				}
+				counter++;
 			});
 		});
 	});
 }
 
-// check to see if all github responses have been received
-function requestsComplete(responses) {
-	var resNames = Object.keys(responses);
-
-	if (resNames.length === 3) {
-		return true;
-	} else {
-		return false;
-	}
-}
-
-// find variable names and line numbers in JS files
-function parseJSFiles(files) {
-	var fileNames = Object.keys(files),
-		script = {};
-
-	fileNames.forEach(function(file) {
-		script[file] = {};
-
-		var data = files[file].replace(/\t+/g, '').split('\n');
-
-		data.forEach(function(line, index) {
-			var parsed = line.split(':');
-
-			if (/^[$a-zA-Z]+$/.test(parsed[0]) && /^ function/.test(parsed[1])) {
-				script[file][parsed[0]] = index + 1;
-			}
-		});
-	});
-	return script;
-}
-
-// find category titles and line numbers in style files
-function parseStyleFiles(file) {
-	var data = file.split('\n'),
-		variables = {};
-
-	data.forEach(function(line, index) {
-		line = line.trim();
-
-		if (/# /.test(line)) {
-			var category = line.replace('# ', '');
-			variables[category] = index + 1;
-		}
-	});
-
-	return variables;
-}
-
-// create JSON file with results from parsing
+// Create JSON file with results from parsing
 function createFile(responses) {
-	var finalJSON = {};
+	var finalJSON = {
+		scripts: parseJSFiles(responses.scripts),
+		mixins: parseStyleFiles(responses.mixins),
+		variables: parseStyleFiles(responses.variables)
+	};
 
-	finalJSON.scripts = parseJSFiles(responses.scripts);
-	finalJSON.mixins = parseStyleFiles(responses.mixins);
-	finalJSON.variables = parseStyleFiles(responses.variables);
-
-	fs.writeFile('line-counts.json', JSON.stringify(finalJSON, null, 4), function (err) {
+	fs.writeFile('line-counts.json', JSON.stringify(finalJSON, null, '\t'), function(err) {
 		if (err) {
 			console.log(err);
-			process.exit();
 		} else {
 			console.log('Wee line counts gathered and file is saved!');
-			process.exit();
 		}
 	});
 }
